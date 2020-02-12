@@ -28,7 +28,7 @@ Contains all the codes used for integrating RNA-seq and quantitative proteomics 
 2) A multiomic differential expression analysis which takes into account both RNA and protein expression values for each gene. This analysis is based on the f-divergence cutoff index (fCI) method.
 3) Identification of cell type specific "proteogenomic" signatures. That is, genes which are expressed specifically upon stimultion with a given cytokine, both at the RNA and protein level. The functions for this analysis are available in the R package 'proteogenomic', also available via my GitHub account.
 
-## single-cell RNA-sequencing
+## Single-cell RNA-sequencing
 Contains all the codes used for analysing single-cell gene expression (i.e. 3' 10X data) in T cells upon stimulation in the presence or absence of cytokines. The analysis steps in this repository include:
 
 1) Deconvolution of cells of different individuals based on natural genetic variation. This step of the analysis is based on the Cardelino (now Vireo) algorithm (https://github.com/single-cell-genetics/vireo). 
