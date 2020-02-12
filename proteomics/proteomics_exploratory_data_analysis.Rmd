@@ -1,0 +1,203 @@
+---
+title: 'Exploratory analysis of quantitative proteomics data'
+author: "Eddie Cano-Gamez (ecg@sanger.ac.uk)"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This code performs an exploratory analysis of the quantitative proteomics (LC-MA/MS) data in the paper "Single-cell transcriptomics identifies an effectorness gradient shaping the response of CD4+ T cells to cytokines". Samples correspond to naive and memory T cells isolated from perihperal blood of healthy individuals and stimulated with a variety of cytokines for 5 days. The data set contains on average 3 biological replicates per condition. 
+
+## Loading libraries
+
+Loading the required R packages.
+```{r load_libraries, message=FALSE, warning=FALSE}
+library(rafalib)
+library(ggplot2)
+library(ggrepel)
+library(limma)
+library(SummarizedExperiment)
+```
+
+## Loading data
+
+Loading a summarized experiment object containing relative protein abundances and metadata. 
+To find out how this summarized experiment was created, please refer to "proteomics_create_summarized_experiment.R"
+```{r load_data, message=FALSE, warning=FALSE}
+proteomics_data <- readRDS("proteinAbundances_summarizedExperiment.rds")
+```
+
+## Visualising data
+
+Setting NA values to zero
+NOTE: This is only done for the purpose of visualisation. When performing statistical testing, NAs are not set to zero.
+```{r replace_NAs, message=FALSE, warning=FALSE}
+assay(proteomics_data)[is.na(assay(proteomics_data))] <- 0
+```
+
+Defining a function which:
+1. Extracts protein expression values
+2. Performs principal component analysis
+3. Returns a matrix with the PC coordinates per sample and sample annotations
+4. Returns the percentage of variance explained by each principal comopnent
+
+```{r define_pca_function, message=FALSE, warning=FALSE}
+getPCs <- function(exp){
+  pcs <- prcomp(t(assay(exp)))
+  pVar <- pcs$sdev^2/sum(pcs$sdev^2)
+  pca.mat <- data.frame(pcs$x)
+  pca.mat$donor_id <- colData(exp)$donor_id
+  pca.mat$cell_type <- colData(exp)$cell_type
+  pca.mat$cytokine_condition <- colData(exp)$cytokine_condition
+  pca.mat$activation_status <- colData(exp)$activation_status
+  res <- list(pcs = pca.mat, pVar=pVar)
+  return(res)
+}
+```
+
+Performing PCA across all samples.
+```{r compute_pca, message=FALSE, warning=FALSE}
+pcs <- getPCs(proteomics_data)
+```
+
+```{r plot_pca, message=FALSE, warning=FALSE, echo=FALSE}
+ggplot(data=pcs$pcs, aes(x=PC1, y=PC2, color=cell_type, shape=activation_status)) +
+  geom_point(size = 8) +
+  xlab(paste0("PC1:", round(pcs$pVar[1]*100), "% variance")) +
+  ylab(paste0("PC2: ", round(pcs$pVar[2]*100), "% variance")) +
+  scale_colour_manual(values = c("#5AB4AC","#AF8DC3")) + 
+  scale_alpha_discrete(range = c(0.5,1)) +
+  coord_fixed() +  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+
+Regressing out inter-individual variability
+```{r regress_batch, message=FALSE, warning=FALSE}
+proteomics_data_regressed <- proteomics_data
+assay(proteomics_data_regressed) <- removeBatchEffect(assay(proteomics_data_regressed), 
+                                         batch = factor(as.vector(colData(proteomics_data_regressed)$donor_id))
+                                         )
+```
+
+Repeating PCA calculation.
+```{r compute_pca_regressed, message=FALSE, warning=FALSE}
+pcs <- getPCs(proteomics_data_regressed)
+```
+
+```{r plot_pca_regressed, message=FALSE, warning=FALSE, echo=FALSE}
+ggplot(data=pcs$pcs, aes(x=PC1, y=PC2, color=cell_type, shape=activation_status)) +
+  geom_point(size = 8) +
+  xlab(paste0("PC1:", round(pcs$pVar[1]*100), "% variance")) +
+  ylab(paste0("PC2: ", round(pcs$pVar[2]*100), "% variance")) +
+  scale_colour_manual(values = c("#5AB4AC","#AF8DC3")) + 
+  scale_alpha_discrete(range = c(0.5,1)) +
+  coord_fixed() +  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+
+## Cell type-specific analysis
+
+Seprating naive and memory T cell samples into two different data sets containing only stimualted cells.
+```{r partition_data, message=FALSE, warning=FALSE}
+proteomics_data_naive <- proteomics_data[,(proteomics_data$cell_type=="CD4_naive") & (proteomics_data$activation_status=="Activated")]
+proteomics_data_memory <- proteomics_data[,(proteomics_data$cell_type=="CD4_memory") & (proteomics_data$activation_status=="Activated")]
+```
+
+### Naive T cells
+
+Performing PCA on 5 days-stimulated naive T cells only.
+```{r compute_pca_naive, message=FALSE, warning=FALSE}
+pcs_naive <- getPCs(proteomics_data_naive)
+```
+
+```{r plot_pca_naive, message=FALSE, warning=FALSE, echo=FALSE}
+ggplot(data=pcs_naive$pcs, aes(x=PC1, y=PC2)) + geom_point(aes(color=donor_id), size=8) +
+  xlab(paste0("PC1:", round(pcs_naive$pVar[1]*100), "% variance")) + 
+  ylab(paste0("PC2: ", round(pcs_naive$pVar[2]*100), "% variance")) +
+  coord_fixed() +  theme_bw() + 
+  theme(plot.title=element_text(size=20, hjust=0.5), axis.title=element_text(size=14), panel.grid = element_blank(), axis.text=element_text(size=12),legend.text=element_text(size=12), legend.title=element_text(size=12), legend.key.size = unit(1.5,"lines"))
+```
+
+Regressing out inter-individual variability
+```{r regress_batch_naive, message=FALSE, warning=FALSE}
+assay(proteomics_data_naive) <- removeBatchEffect(assay(proteomics_data_naive), 
+                                         batch = factor(as.vector(colData(proteomics_data_naive)$donor_id))
+                                         )
+```
+
+Re-calculating PCs
+```{r compute_pca_naive_regressed, message=FALSE, warning=FALSE}
+pcs_naive <- getPCs(proteomics_data_naive)
+```
+
+```{r plot_pca_naive_regressed, message=FALSE, warning=FALSE, echo=FALSE}
+ggplot(data=pcs_naive$pcs, aes(x=PC1, y=PC2, color=cytokine_condition)) +
+  geom_point(size = 8) + geom_label_repel(aes(label=cytokine_condition, color=cytokine_condition)) +
+  xlab(paste0("PC1: ", round(pcs_naive$pVar[1]*100), "% variance")) +
+  ylab(paste0("PC2: ", round(pcs_naive$pVar[2]*100), "% variance")) +
+  scale_colour_brewer(palette = "Dark2") +
+  scale_fill_brewer(palette = "Dark2") +
+  coord_fixed() +  theme_bw() +
+  theme(panel.grid = element_blank(), legend.position = "none")
+```
+
+Removing outlier sample.
+```{r remove_outlier, message=FALSE, warning=FALSE}
+proteomics_data_naive <- proteomics_data_naive[, colnames(proteomics_data_naive) != "D257_CD4_naive_Th1"]
+```
+
+Re-computing PCs.
+```{r compute_pca_naive_regressed_no_outliers, message=FALSE, warning=FALSE}
+pcs_naive <- getPCs(proteomics_data_naive)
+```
+
+```{r plot_pca_naive_regressed, message=FALSE, warning=FALSE, echo=FALSE}
+ggplot(data=pcs_naive$pcs, aes(x=PC1, y=PC2, color=cytokine_condition)) +
+  geom_point(size = 8) + geom_label_repel(aes(label=cytokine_condition, color=cytokine_condition)) +
+  xlab(paste0("PC1: ", round(pcs_naive$pVar[1]*100), "% variance")) +
+  ylab(paste0("PC2: ", round(pcs_naive$pVar[2]*100), "% variance")) +
+  scale_colour_brewer(palette = "Dark2") +
+  scale_fill_brewer(palette = "Dark2") +
+  coord_fixed() +  theme_bw() +
+  theme(panel.grid = element_blank(), legend.position = "none")
+```
+
+### Memory T cells
+
+Performing PCA on 5 days-stimulated memory T cells only.
+```{r compute_pca_naive, message=FALSE, warning=FALSE}
+pcs_memory <- getPCs(proteomics_data_memory)
+```
+
+```{r plot_pca_memory, message=FALSE, warning=FALSE, echo=FALSE}
+ggplot(data=pcs_memory$pcs, aes(x=PC1, y=PC2)) + geom_point(aes(color=donor_id), size=8) +
+  xlab(paste0("PC1:", round(pcs_memory$pVar[1]*100), "% variance")) + 
+  ylab(paste0("PC2: ", round(pcs_memory$pVar[2]*100), "% variance")) +
+  coord_fixed() +  theme_bw() + 
+  theme(plot.title=element_text(size=20, hjust=0.5), axis.title=element_text(size=14), panel.grid = element_blank(), axis.text=element_text(size=12),legend.text=element_text(size=12), legend.title=element_text(size=12), legend.key.size = unit(1.5,"lines"))
+```
+
+Regressing out inter-individual variability
+```{r regress_batch_memory, message=FALSE, warning=FALSE}
+assay(proteomics_data_memory) <- removeBatchEffect(assay(proteomics_data_memory), 
+                                         batch = factor(as.vector(colData(proteomics_data_memory)$donor_id))
+                                         )
+```
+
+Re-calculating PCs
+```{r compute_pca_memory_regressed, message=FALSE, warning=FALSE}
+pcs_memory <- getPCs(proteomics_data_memory)
+```
+
+```{r plot_pca_memory_regressed, message=FALSE, warning=FALSE, echo=FALSE}
+ggplot(data=pcs_memory$pcs, aes(x=PC1, y=PC2, color=cytokine_condition)) +
+  geom_point(size = 8) + geom_label_repel(aes(label=cytokine_condition, color=cytokine_condition)) +
+  xlab(paste0("PC1: ", round(pcs_memory$pVar[1]*100), "% variance")) +
+  ylab(paste0("PC2: ", round(pcs_memory$pVar[2]*100), "% variance")) +
+  scale_colour_brewer(palette = "Dark2") +
+  scale_fill_brewer(palette = "Dark2") +
+  coord_fixed() +  theme_bw() +
+  theme(panel.grid = element_blank(), legend.position = "none")
+```

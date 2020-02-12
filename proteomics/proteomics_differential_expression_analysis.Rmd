@@ -1,0 +1,176 @@
+---
+title: "Differential expression analysis of quantitative proteomics data"
+author: "Eddie Cano-Gamez (ecg@sanger.ac.uk)"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This code performs differential protein expression analysis per cell type for all cytokine conditions in the paper "Single-cell transcriptomics identifies an effectorness gradient shaping the response of CD4+ T cells to cytokines".
+
+## Loading libraries
+
+Load the required R packages.
+```{r load_libraries, message=FALSE, warning=FALSE}
+library(SummarizedExperiment)
+library(rafalib)
+library(limma)
+library(gProfileR)
+library(ggplot2)
+library(reshape2)
+```
+
+## Loading data
+
+Loading a SummarizedExperiment object with relative protein abundances and metadata for the samples in this study. For instructions on how this object was generated, please refer to "proteomics_create_summarized_experiment.R".
+```{r load_data, message=FALSE, warning=FALSE}
+proteomics_data <- readRDS("proteinAbundances_summarizedExperiment.rds")
+```
+
+## Pre-processing data
+
+Transforming data to the log2 space. This allows up and downregulation of proteins to be symmetrical when shown as ratios (i.e. log-fold changes). 
+```{r log_transform, message=FALSE, warning=FALSE}
+proteomics_data_log2 <- proteomics_data
+assay(proteomics_data_log2) <- log2(assay(proteomics_data_log2))
+```
+
+Separating data into two data sets, one per cell type.
+```{r partition_data, message=FALSE, warning=FALSE}
+proteomics_data_log2_naive <- proteomics_data_log2[,proteomics_data_log2$cell_type == "CD4_naive"]
+proteomics_data_log2_memory <- proteomics_data_log2[,proteomics_data_log2$cell_type == "CD4_memory"]
+```
+
+Removing factor levels no longer present in the data sets.
+```{r drop_factors, message=FALSE, warning=FALSE}
+proteomics_data_log2_naive$donor_id <- droplevels(proteomics_data_log2_naive$donor_id)
+proteomics_data_log2_memory$donor_id <- droplevels(proteomics_data_log2_memory$donor_id)
+```
+
+## Testing for differential protein expression
+### Defining a moderated T-test function
+
+Defining a function which performs a moderated T test between all levels against the control level within a given data set.
+This function:
+1) Only keeps genes which exist (i.e. are not NA) in at least 2 out or 3 biological replicates of each condition
+2) Moderates the standard deviation using functions in the eBayes package
+```{r define_moderated_t_test, message=FALSE, warning=FALSE}
+moderated_T_test <- function(log.exp, ctrl, cond, min.samples=2){
+  mat <- log.exp[,c(colnames(log.exp[,log.exp$cytokine_condition == ctrl]), colnames(log.exp[,log.exp$cytokine_condition == cond]))]
+  mat <- mat[rowSums(!is.na(assay(mat[,c(colnames(log.exp[,log.exp$cytokine_condition == ctrl]))])))>=min.samples,]
+  mat <- mat[rowSums(!is.na(assay(mat[,c(colnames(log.exp[,log.exp$cytokine_condition == cond]))])))>=min.samples,]
+  design <-cbind(Intercept=1,Groups=factor(c(rep(0,sum(mat$cytokine_condition==ctrl)),
+                                             rep(1,sum(mat$cytokine_condition==cond)))))
+  fit <- lmFit(assay(mat), design)
+  mod.fit <- eBayes(fit)
+  p.adj <- p.adjust(mod.fit$p.value[,2], method = "fdr")
+  res <- data.frame(LFC = mod.fit$coefficients[,2],
+                    P.value = mod.fit$p.value[,2],
+                    P.adj = p.adj)
+  return(res)
+}
+```
+
+
+### Analysis of naive T cells
+
+Performing differential expression analysis between all cytokine conditions and Th0. Furthermore, testing for differential protein expression between Th17 and iTreg-stimulated cells.
+```{r test_differential_expression_naive, message=FALSE, warning=FALSE}
+result_naive_th0_vs_resting <- moderated_T_test(proteomics_data_log2_naive, "resting","Th0")
+result_naive_th1_vs_th0 <- moderated_T_test(proteomics_data_log2_naive, "Th0","Th1")
+result_naive_th2_vs_th0 <- moderated_T_test(proteomics_data_log2_naive, "Th0","Th2")
+result_naive_th17_vs_th0 <- moderated_T_test(proteomics_data_log2_naive, "Th0","Th17")
+result_naive_itreg_vs_th0 <- moderated_T_test(proteomics_data_log2_naive, "Th0","iTreg")
+result_naive_ifnb_vs_th0 <- moderated_T_test(proteomics_data_log2_naive, "Th0","IFNB")
+
+result_naive_itreg_vs_th17 <- moderated_T_test(proteomics_data_log2_naive, "Th17","iTreg")
+```
+
+Keeping genes with FDR-adjusted P value < 0.1 and |LFC| > 0..5
+```{r filter_DE_genes_naive, message=FALSE, warning=FALSE}
+result_naive_th0_vs_resting <- result_naive_th0_vs_resting[result_naive_th0_vs_resting$P.adj < 0.1 & abs(result_naive_th0_vs_resting$LFC) > 0.5,]
+result_naive_th1_vs_th0 <- result_naive_th1_vs_th0[result_naive_th1_vs_th0$P.adj < 0.1 & abs(result_naive_th1_vs_th0$LFC) > 0.5,]
+result_naive_th2_vs_th0 <- result_naive_th2_vs_th0[result_naive_th2_vs_th0$P.adj < 0.1 & abs(result_naive_th2_vs_th0$LFC) > 0.5,]
+result_naive_th17_vs_th0 <- result_naive_th17_vs_th0[result_naive_th17_vs_th0$P.adj < 0.1 & abs(result_naive_th17_vs_th0$LFC) > 0.5,]
+result_naive_itreg_vs_th0 <- result_naive_itreg_vs_th0[result_naive_itreg_vs_th0$P.adj < 0.1 & abs(result_naive_itreg_vs_th0$LFC) > 0.5,]
+result_naive_ifnb_vs_th0 <- result_naive_ifnb_vs_th0[result_naive_ifnb_vs_th0$P.adj < 0.1 & abs(result_naive_ifnb_vs_th0$LFC) > 0.5,]
+
+result_naive_itreg_vs_th17 <- result_naive_itreg_vs_th17[result_naive_itreg_vs_th17$P.adj < 0.1 & abs(result_naive_itreg_vs_th17$LFC) > 0.5,]
+```
+
+Ordering genes by log-fold change
+```{r order_by_lfc_naive, message=FALSE, warning=FALSE}
+result_naive_th0_vs_resting <- result_naive_th0_vs_resting[order(-result_naive_th0_vs_resting$LFC),]
+result_naive_th1_vs_th0 <- result_naive_th1_vs_th0[order(-result_naive_th1_vs_th0$LFC),]
+result_naive_th2_vs_th0 <- result_naive_th2_vs_th0[order(-result_naive_th2_vs_th0$LFC),]
+result_naive_th17_vs_th0 <- result_naive_th17_vs_th0[order(-result_naive_th17_vs_th0$LFC),]
+result_naive_itreg_vs_th0 <- result_naive_itreg_vs_th0[order(-result_naive_itreg_vs_th0$LFC),]
+result_naive_ifnb_vs_th0 <- result_naive_ifnb_vs_th0[order(-result_naive_ifnb_vs_th0$LFC),]
+
+result_naive_itreg_vs_th17 <- result_naive_itreg_vs_th17[order(-result_naive_itreg_vs_th17$LFC),]
+```
+
+Saving results to CSV files
+```{r save_results_naive, message=FALSE, warning=FALSE}
+write.csv(result_naive_th0_vs_resting, file="differentiallyExpressedProteins_naive_5d_Th0_vs_resting.csv",quote=F)
+write.csv(result_naive_th1_vs_th0, file=".differentiallyExpressedProteins_naive_5d_Th1_vs_Th0.csv",quote=F)
+write.csv(result_naive_th2_vs_th0, file="differentiallyExpressedProteins_naive_5d_Th2_vs_Th0.csv",quote=F)
+write.csv(result_naive_th17_vs_th0, file="differentiallyExpressedProteins_naive_5d_Th17_vs_Th0.csv",quote=F)
+write.csv(result_naive_itreg_vs_th0, file="differentiallyExpressedProteins_naive_5d_iTreg_vs_Th0.csv",quote=F)
+write.csv(result_naive_ifnb_vs_th0, file="differentiallyExpressedProteins_naive_5d_IFNB_vs_Th0.csv",quote=F)
+
+write.csv(result_naive_itreg_vs_th17, file="differentiallyExpressedProteins_naive_5d_iTreg_vs_Th17.csv",quote=F)
+```
+
+
+### Analysis of memory T cells
+
+Performing differential expression analysis between all cytokine conditions and Th0. Furthermore, testing for differential protein expression between Th17 and iTreg-stimulated cells.
+```{r test_differential_expression_memory, message=FALSE, warning=FALSE}
+result_memory_th0_vs_resting <- moderated_T_test(proteomics_data_log2_memory, "resting","Th0")
+result_memory_th1_vs_th0 <- moderated_T_test(proteomics_data_log2_memory, "Th0","Th1")
+result_memory_th2_vs_th0 <- moderated_T_test(proteomics_data_log2_memory, "Th0","Th2")
+result_memory_th17_vs_th0 <- moderated_T_test(proteomics_data_log2_memory, "Th0","Th17")
+result_memory_itreg_vs_th0 <- moderated_T_test(proteomics_data_log2_memory, "Th0","iTreg")
+result_memory_ifnb_vs_th0 <- moderated_T_test(proteomics_data_log2_memory, "Th0","IFNB")
+
+result_memory_itreg_vs_th17 <- moderated_T_test(proteomics_data_log2_memory, "Th17","iTreg")
+```
+
+Keeping genes with FDR-adjusted P value < 0.1 and |LFC| > 0..5
+```{r filter_DE_genes_memory, message=FALSE, warning=FALSE}
+result_memory_th0_vs_resting <- result_memory_th0_vs_resting[result_memory_th0_vs_resting$P.adj < 0.1 & abs(result_memory_th0_vs_resting$LFC) > 0.5,]
+result_memory_th1_vs_th0 <- result_memory_th1_vs_th0[result_memory_th1_vs_th0$P.adj < 0.1 & abs(result_memory_th1_vs_th0$LFC) > 0.5,]
+result_memory_th2_vs_th0 <- result_memory_th2_vs_th0[result_memory_th2_vs_th0$P.adj < 0.1 & abs(result_memory_th2_vs_th0$LFC) > 0.5,]
+result_memory_th17_vs_th0 <- result_memory_th17_vs_th0[result_memory_th17_vs_th0$P.adj < 0.1 & abs(result_memory_th17_vs_th0$LFC) > 0.5,]
+result_memory_itreg_vs_th0 <- result_memory_itreg_vs_th0[result_memory_itreg_vs_th0$P.adj < 0.1 & abs(result_memory_itreg_vs_th0$LFC) > 0.5,]
+result_memory_ifnb_vs_th0 <- result_memory_ifnb_vs_th0[result_memory_ifnb_vs_th0$P.adj < 0.1 & abs(result_memory_ifnb_vs_th0$LFC) > 0.5,]
+
+result_memory_itreg_vs_th17 <- result_memory_itreg_vs_th17[result_memory_itreg_vs_th17$P.adj < 0.1 & abs(result_memory_itreg_vs_th17$LFC) > 0.5,]
+```
+
+Ordering genes by log-fold change
+```{r order_by_lfc_memory, message=FALSE, warning=FALSE}
+result_memory_th0_vs_resting <- result_memory_th0_vs_resting[order(-result_memory_th0_vs_resting$LFC),]
+result_memory_th1_vs_th0 <- result_memory_th1_vs_th0[order(-result_memory_th1_vs_th0$LFC),]
+result_memory_th2_vs_th0 <- result_memory_th2_vs_th0[order(-result_memory_th2_vs_th0$LFC),]
+result_memory_th17_vs_th0 <- result_memory_th17_vs_th0[order(-result_memory_th17_vs_th0$LFC),]
+result_memory_itreg_vs_th0 <- result_memory_itreg_vs_th0[order(-result_memory_itreg_vs_th0$LFC),]
+result_memory_ifnb_vs_th0 <- result_memory_ifnb_vs_th0[order(-result_memory_ifnb_vs_th0$LFC),]
+
+result_memory_itreg_vs_th17 <- result_memory_itreg_vs_th17[order(-result_memory_itreg_vs_th17$LFC),]
+```
+
+Saving results to CSV files
+```{r save_results_memory, message=FALSE, warning=FALSE}
+write.csv(result_memory_th0_vs_resting, file="differentiallyExpressedProteins_memory_5d_Th0_vs_resting.csv",quote=F)
+write.csv(result_memory_th1_vs_th0, file=".differentiallyExpressedProteins_memory_5d_Th1_vs_Th0.csv",quote=F)
+write.csv(result_memory_th2_vs_th0, file="differentiallyExpressedProteins_memory_5d_Th2_vs_Th0.csv",quote=F)
+write.csv(result_memory_th17_vs_th0, file="differentiallyExpressedProteins_memory_5d_Th17_vs_Th0.csv",quote=F)
+write.csv(result_memory_itreg_vs_th0, file="differentiallyExpressedProteins_memory_5d_iTreg_vs_Th0.csv",quote=F)
+write.csv(result_memory_ifnb_vs_th0, file="differentiallyExpressedProteins_memory_5d_IFNB_vs_Th0.csv",quote=F)
+
+write.csv(result_memory_itreg_vs_th17, file="differentiallyExpressedProteins_memory_5d_iTreg_vs_Th17.csv",quote=F)
+```

@@ -1,0 +1,328 @@
+---
+title: 'Exploratory analysis of bulk RNA-seq data'
+author: "Eddie Cano-Gamez (ecg@sanger.ac.uk)"
+output: html_document
+---
+
+This code performs an exploratory analysis of the bulk RNA-seq data in the paper "Single-cell transcriptomics identifies an effectorness gradient shaping the response of CD4+ T cells to cytokines". Samples correspond to naive and memory T cells isolated from perihperal blood of healthy individuals and stimulated with a variety of cytokines at two different time points. The data set contains on average 3 biological replicates per condition and also includes pairs of technical replicates. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Loading libraries
+
+Loading the required R packages.
+```{r load_libraries, message=FALSE, warning=FALSE}
+library(SummarizedExperiment)
+library(DESeq2)
+library(ggplot2)
+library(cowplot)
+library(rafalib)
+library(dplyr)
+library(reshape2)
+library(RColorBrewer)
+library(pheatmap)
+library(limma)
+library(ggrepel)
+```
+
+## Loading data
+
+Loading a summarized experiment object containing RNA-seq counts and metadata. 
+To find out how this summarized experiment was created, please refer to "RNAseq_create_summarized_experiment.R"
+
+```{r load_data, message=FALSE, warning=FALSE}
+exp <- readRDS("bulkRNAseq_summarizedExperiment.rds")
+```
+
+
+## Gene filtering
+
+Filtering genes based on the following critieria:
+
+1. Genes mapping to the Y chromosome are removed
+2. Genes mapping to the HLA region (i.e. 'chr6 28,000,000-34,000,000' in Ensembl 87/GRCh38) are removed
+3. Only protein coding genes and lincRNAs are kept
+4. Lowly expressed genes (i.e. at least 30 total reads) are removed
+   NOTE: DESeq2 performs stringer automatic filtering when doing statistical testing
+
+```{r filter_genes, message=FALSE, warning=FALSE}
+exp <- exp[!is.na(rowData(exp)$Chr)]
+exp <- exp[rowData(exp)$Chr != "Y",]
+exp <- exp[!(rowData(exp)$Chr == "6" & rowData(exp)$Start > 28000000 & rowData(exp)$End < 34000000),]
+exp <- exp[rowData(exp)$Biotype == "protein_coding" | rowData(exp)$Biotype == "lincRNA",]
+exp <- exp[rowSums(assay(exp))>30,]
+```
+
+Converting data into a DESeqDataSet. The design matrix is kept empty for now (i.e. ~1) , since no statistical testing is done in this code.
+
+```{r construct_dds, message=FALSE, warning=FALSE}
+dds <- DESeqDataSet(exp, design= ~ 1)
+rowData(dds) <- rowData(exp)
+```
+
+## Merging technical replicates
+
+Collapsing technical replicates of the same condition by adding up their counts into one single column.
+```{r merge_replicates, message=FALSE, warning=FALSE}
+dds$ID <- factor(paste0(dds$donor_id, "_", dds$cell_type, "_", dds$stimulation_time, "_", dds$cytokine_condition))
+dds.coll <- collapseReplicates(object=dds, groupby=dds$ID)
+dds.coll <- estimateSizeFactors(dds.coll)
+```
+
+Saving counts table with merged replicates as an R data set.
+```{r save_merged_replicates, message=FALSE, warning=FALSE}
+saveRDS(dds.coll, "rawCounts_bulkRNAseq_DESeq2.rds")
+```
+
+## Data normalisation
+
+Transforming counts to the log2 scale (using regularized logrithms) and correcting for library size.
+```{r compute_rlogs, message=FALSE, warning=FALSE}
+rld.coll <- rlog(dds.coll, blind=TRUE)
+```
+
+Saving rlog-counts table with merged replicates as an R data set.
+```{r save_rlog_merged_replicates, message=FALSE, warning=FALSE}
+saveRDS(rld.coll, "rlogCounts_bulkRNAseq_DESeq2.rds")
+```
+
+## Visualising data
+
+Defining a function which performs principal component analysis (PCA) and returns the first 6 PC values for each sample, as well as the sample annotations and the percentage of variance explained by each component.
+```{r pca_function, message=FALSE, warning=FALSE}
+get.pcs <- function(exp){
+  pca <- prcomp(t(assay(exp)))
+  pVar <- pca$sdev^2/sum(pca$sdev^2)
+  intgroup=as.data.frame(colData(exp))
+  d <- data.frame(PC1=pca$x[, 1], PC2=pca$x[, 2], PC3=pca$x[, 3],
+                  PC4=pca$x[, 4], PC5=pca$x[, 5], PC6=pca$x[, 6], 
+                  intgroup)
+  d <- list(d,pVar[1:6])
+  names(d) <- c("PCs","pVar")
+  return(d)
+}
+```
+
+Performing principal component analysis on the rlog counts.
+
+```{r compute_pca, message=FALSE, warning=FALSE}
+pcs.rld <- get.pcs(rld.coll)
+```
+
+Visualising the results of PCA.
+```{r plot_pca, message=FALSE, warning=FALSE, echo=FALSE}
+ggplot(data=pcs.rld$PCs, aes(x=PC1, y=PC2, color=cell_type, shape=activation_status, alpha = stimulation_time)) +
+  geom_point(size = 8) +
+  xlab(paste0("PC1:", round(pcs.rld$pVar[1]*100), "% variance")) +
+  ylab(paste0("PC2: ", round(pcs.rld$pVar[2]*100), "% variance")) +
+  scale_colour_manual(values = c("#5AB4AC","#AF8DC3")) + 
+  scale_alpha_discrete(range = c(0.5,1)) +
+  coord_fixed() +  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+
+Removing outlier sample identified by PCA (i.e. 262_CD4_Memory_16h_iTreg).
+```{r remove_outlier, message=FALSE, warning=FALSE}
+dds.coll <- dds.coll[, dds.coll$ID != "262_CD4_Memory_16h_iTreg"]
+rld.coll <- rld.coll[, rld.coll$ID != "262_CD4_Memory_16h_iTreg"]
+```
+
+Saving clean data sets.
+```{r save collapsed data, message=FALSE, warning=FALSE}
+saveRDS(dds.coll, "rawCounts_bulkRNAseq_DESeq2.rds")
+saveRDS(rld.coll, "rlogCounts_bulkRNAseq_DESeq2.rds")
+```
+
+Performing PCA in the clean data set (without outliers).
+```{r compute_pca_no_outliers, message=FALSE, warning=FALSE}
+pcs.rld <- get.pcs(rld.coll)
+```
+
+```{r plot_pca_no_outliers, message=FALSE, warning=FALSE, echo=FALSE}
+ggplot(data=pcs.rld$PCs, aes(x=PC1, y=PC2, color=cell_type, shape=activation_status, alpha = stimulation_time)) +
+  geom_point(size = 8) +
+  xlab(paste0("PC1:", round(pcs.rld$pVar[1]*100), "% variance")) +
+  ylab(paste0("PC2: ", round(pcs.rld$pVar[2]*100), "% variance")) +
+  scale_colour_manual(values = c("#5AB4AC","#AF8DC3")) + 
+  scale_alpha_discrete(range = c(0.5,1)) +
+  coord_fixed() +  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+
+## Cell type and time point-specific analysis
+
+Seprating naive and memory T cell samples into two different DESeqDataSets.
+```{r partition_dds, message=FALSE, warning=FALSE}
+dds.naive <- dds.coll[,dds.coll$cell_type=="CD4_Naive"]
+dds.memory <- dds.coll[,dds.coll$cell_type=="CD4_Memory"]
+```
+
+```{r partition_rld, message=FALSE, warning=FALSE}
+rld.naive <- rld.coll[,rld.coll$cell_type=="CD4_Naive"]
+rld.memory <- rld.coll[,rld.coll$cell_type=="CD4_Memory"]
+```
+
+### Naive T cells
+#### Early stimualtion of naive T cells
+
+Performing PCA on 16h-stimulated naive T cells only.
+```{r compute_pca_naive_16h, message=FALSE, warning=FALSE}
+rld_naive16h <- rld.naive[, (rld.naive$activation_status == "Activated") & (rld.naive$stimulation_time=="16h")]
+pcs_naive16h <- get.pcs(rld_naive16h)
+```
+
+```{r plot_pca_naive_16h, message=FALSE, warning=FALSE, echo=FALSE}
+ggplot(data=pcs_naive16h$PCs, aes(x=PC1, y=PC2, color=as.factor(donor_id))) +
+  geom_point(size = 8) + 
+  xlab(paste0("PC1: ", round(pcs.n16$pVar[1]*100), "% variance")) +
+  ylab(paste0("PC2: ", round(pcs.n16$pVar[2]*100), "% variance")) +
+  scale_colour_brewer(palette = "Dark2") + coord_fixed() +  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+
+Regressing out inter-individual variability
+```{r regress_batch_naive_16h, message=FALSE, warning=FALSE}
+assay(rld_naive16h) <- removeBatchEffect(assay(rld_naive16h), 
+                                         batch = factor(as.vector(colData(rld_naive16h)$donor_id))
+                                         )
+```
+
+Re-calculating PCA
+```{r compute_pca_naive_16h_regressed, message=FALSE, warning=FALSE}
+pcs_naive16h <- get.pcs(rld_naive16h)
+```
+
+```{r plot_pca_naive_16h_regressed, message=FALSE, warning=FALSE, echo=FALSE}
+ggplot(data=pcs_naive16h$PCs, aes(x=PC1, y=PC2, color=cytokine_condition)) +
+  geom_point(size = 8) + geom_label_repel(aes(label=cytokine_condition, color=cytokine_condition)) +
+  xlab(paste0("PC1: ", round(pcs.n16$pVar[1]*100), "% variance")) +
+  ylab(paste0("PC2: ", round(pcs.n16$pVar[2]*100), "% variance")) +
+  scale_colour_brewer(palette = "Dark2") +
+  scale_fill_brewer(palette = "Dark2") +
+  coord_fixed() +  theme_bw() +
+  theme(panel.grid = element_blank(), legend.position = "none")
+```
+
+#### Late stimualtion of naive T cells
+
+Performing PCA on 5 days-stimulated naive T cells only.
+```{r compute_pca_naive_5d, message=FALSE, warning=FALSE}
+rld_naive5d <- rld.naive[, (rld.naive$activation_status == "Activated") & (rld.naive$stimulation_time=="5d")]
+pcs_naive5d <- get.pcs(rld_naive5d)
+```
+
+```{r plot_pca_naive_5d, message=FALSE, warning=FALSE, echo=FALSE}
+ggplot(data=pcs_naive5d$PCs, aes(x=PC1, y=PC2, color=as.factor(donor_id))) +
+  geom_point(size = 8) + 
+  xlab(paste0("PC1: ", round(pcs.n16$pVar[1]*100), "% variance")) +
+  ylab(paste0("PC2: ", round(pcs.n16$pVar[2]*100), "% variance")) +
+  scale_colour_brewer(palette = "Dark2") + coord_fixed() +  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+
+Regressing out inter-individual variability
+```{r regress_batch_naive_5d, message=FALSE, warning=FALSE}
+assay(rld_naive5d) <- removeBatchEffect(assay(rld_naive5d), 
+                                         batch = factor(as.vector(colData(rld_naive5d)$donor_id))
+                                         )
+```
+
+Re-calculating PCA
+```{r compute_pca_naive_5d_regressed, message=FALSE, warning=FALSE}
+pcs_naive5d <- get.pcs(rld_naive5d)
+```
+
+```{r plot_pca_naive_120h_regressed, message=FALSE, warning=FALSE, echo=FALSE}
+ggplot(data=pcs_naive5d$PCs, aes(x=PC1, y=PC2, color=cytokine_condition)) +
+  geom_point(size = 8) + geom_label_repel(aes(label=cytokine_condition, color=cytokine_condition)) +
+  xlab(paste0("PC1: ", round(pcs.n16$pVar[1]*100), "% variance")) +
+  ylab(paste0("PC2: ", round(pcs.n16$pVar[2]*100), "% variance")) +
+  scale_colour_brewer(palette = "Dark2") +
+  scale_fill_brewer(palette = "Dark2") +
+  coord_fixed() +  theme_bw() +
+  theme(panel.grid = element_blank(), legend.position = "none")
+```
+
+
+### Memory T cells
+#### Early stimualtion of naive T cells
+
+Performing PCA on 16h-stimulated memory T cells only.
+```{r compute_pca_memory_16h, message=FALSE, warning=FALSE}
+rld_memory16h <- rld.memory[, (rld.memory$activation_status == "Activated") & (rld.memory$stimulation_time=="16h")]
+pcs_memory16h <- get.pcs(rld_memory16h)
+```
+
+```{r plot_pca_memory_16h, message=FALSE, warning=FALSE, echo=FALSE}
+ggplot(data=pcs_memory16h$PCs, aes(x=PC1, y=PC2, color=as.factor(donor_id))) +
+  geom_point(size = 8) + 
+  xlab(paste0("PC1: ", round(pcs.n16$pVar[1]*100), "% variance")) +
+  ylab(paste0("PC2: ", round(pcs.n16$pVar[2]*100), "% variance")) +
+  scale_colour_brewer(palette = "Dark2") + coord_fixed() +  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+
+Regressing out inter-individual variability
+```{r regress_batch_memory_16h, message=FALSE, warning=FALSE}
+assay(rld_memory16h) <- removeBatchEffect(assay(rld_memory16h), 
+                                         batch = factor(as.vector(colData(rld_memory16h)$donor_id))
+                                         )
+```
+
+Re-calculating PCA
+```{r compute_pca_memory_16h_regressed, message=FALSE, warning=FALSE}
+pcs_memory16h <- get.pcs(rld_memory16h)
+```
+
+```{r plot_pca_memory_16h_regressed, message=FALSE, warning=FALSE, echo=FALSE}
+ggplot(data=pcs_memory16h$PCs, aes(x=PC1, y=PC2, color=cytokine_condition)) +
+  geom_point(size = 8) + geom_label_repel(aes(label=cytokine_condition, color=cytokine_condition)) +
+  xlab(paste0("PC1: ", round(pcs.n16$pVar[1]*100), "% variance")) +
+  ylab(paste0("PC2: ", round(pcs.n16$pVar[2]*100), "% variance")) +
+  scale_colour_brewer(palette = "Dark2") +
+  scale_fill_brewer(palette = "Dark2") +
+  coord_fixed() +  theme_bw() +
+  theme(panel.grid = element_blank(), legend.position = "none")
+```
+
+#### Late stimualtion of memory T cells
+
+Performing PCA on 5 days-stimulated memory T cells only.
+```{r compute_pca_memory_5d, message=FALSE, warning=FALSE}
+rld_memory5d <- rld.memory[, (rld.memory$activation_status == "Activated") & (rld.memory$stimulation_time=="5d")]
+pcs_memory5d <- get.pcs(rld_memory5d)
+```
+
+```{r plot_pca_memory_5d, message=FALSE, warning=FALSE, echo=FALSE}
+ggplot(data=pcs_memory5d$PCs, aes(x=PC1, y=PC2, color=as.factor(donor_id))) +
+  geom_point(size = 8) + 
+  xlab(paste0("PC1: ", round(pcs.n16$pVar[1]*100), "% variance")) +
+  ylab(paste0("PC2: ", round(pcs.n16$pVar[2]*100), "% variance")) +
+  scale_colour_brewer(palette = "Dark2") + coord_fixed() +  theme_bw() +
+  theme(panel.grid = element_blank())
+```
+
+Regressing out inter-individual variability
+```{r regress_batch_memory_5d, message=FALSE, warning=FALSE}
+assay(rld_memory5d) <- removeBatchEffect(assay(rld_memory5d), 
+                                         batch = factor(as.vector(colData(rld_memory5d)$donor_id))
+                                         )
+```
+
+Re-calculating PCA
+```{r compute_pca_memory_5d_regressed, message=FALSE, warning=FALSE}
+pcs_memory5d <- get.pcs(rld_memory5d)
+```
+
+```{r plot_pca_memory_120h_regressed, message=FALSE, warning=FALSE, echo=FALSE}
+ggplot(data=pcs_memory5d$PCs, aes(x=PC1, y=PC2, color=cytokine_condition)) +
+  geom_point(size = 8) + geom_label_repel(aes(label=cytokine_condition, color=cytokine_condition)) +
+  xlab(paste0("PC1: ", round(pcs.n16$pVar[1]*100), "% variance")) +
+  ylab(paste0("PC2: ", round(pcs.n16$pVar[2]*100), "% variance")) +
+  scale_colour_brewer(palette = "Dark2") +
+  scale_fill_brewer(palette = "Dark2") +
+  coord_fixed() +  theme_bw() +
+  theme(panel.grid = element_blank(), legend.position = "none")
+```

@@ -1,0 +1,277 @@
+---
+title: 'Differential expression analysis of bulk RNA-seq data'
+author: "Eddie Cano-Gamez (ecg@sanger.ac.uk)"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This code performs differential RNA expression analysis per cell type for all cytokine conditions in the paper "Single-cell transcriptomics identifies an effectorness gradient shaping the response of CD4+ T cells to cytokines".
+
+## Loading libraries
+
+Load the required R packages.
+```{r load_libraries, message=FALSE, warning=FALSE}
+library(SummarizedExperiment)
+library(DESeq2)
+library(ggplot2)
+library(cowplot)
+library(rafalib)
+library(dplyr)
+library(RColorBrewer)
+library(annotables)
+```
+
+## Loading data
+
+Loading a DESeqDataSet object with RNA-seq counts and metadata for the samples in this study. For instructions on how this object was generated, please refer to "RNAseq_exploratory_data_analysis.Rmd".
+```{r load_data, message=FALSE, warning=FALSE}
+dds <- readRDS("rawCounts_bulkRNAseq_DESeq2.rds")
+```
+
+Separating naive and memory T cell samples into two different DESeqDataSets.
+```{r partition_dds, message=FALSE, warning=FALSE}
+dds.naive <- dds[,dds$cell_type=="CD4_Naive"]
+dds.memory <- dds[,dds$cell_type=="CD4_Memory"]
+```
+
+## Differential Expression Analysis
+
+Defining a function that performs statistical testing for differential expression using DESeq2 for a list of conditions against a common control. 
+
+This function takes as an input the raw counts (i.e. a DESeqDataSet object), the name of the control level with which other conditions should be compared (e.g. Resting, Th0, etc...), and the desired FDR thershold for multiple testing correction. It performs statistical testing for all available conditions against the specified control and outputs a list containing the results of all pairwise comparisons. 
+
+```{r define_serialDE, message=FALSE, warning=FALSE}
+serialDE <- function(dds,ctrl,fdr){
+  L<- levels(dds$cytokine_condition)
+  L <- L[L!=ctrl]
+  R <- lapply(X=L, FUN=function(L){
+    res <- results(dds,
+                 contrast=c("cytokine_condition",L,ctrl),
+                 alpha=fdr,
+                 independentFiltering = TRUE)
+    return(res)
+    })
+  return(R)
+  }
+```
+
+### Naive CD4+ T cells
+
+Partitioning the naive T cell data set by stimulation time point.
+```{r partition_naive_by_time_point, message=FALSE, warning=FALSE}
+dds_naive16h <- dds.naive[,dds.naive$stimulation_time=="16h"]
+dds_naive5d <- dds.naive[,dds.naive$stimulation_time=="5d"]
+```
+
+Transforming donor IDs to factors.
+```{r transform_donor_to_factor, message=FALSe, warning=FALSE}
+dds_naive16h$donor_id <- factor(dds_naive16h$donor_id)
+dds_naive5d$donor_id <- factor(dds_naive5d$donor_id)
+```
+
+Setting the design equations. The design equation accounts for two sources of variability: 
+
+1) Inter-individual variability (donor_id)
+2) Variability due to cytokine sitmulations (cytokine_condition)
+
+The equation is defined as follows:
+~ Donor + Stimulus
+
+```{r set_design_naive, message=FALSE, warning=FALSE}
+design(dds_naive16h) <- ~ donor_id + cytokine_condition
+design(dds_naive5d) <- ~ donor_id + cytokine_condition
+```
+
+Removing factor levels that are no longer present in the data set.
+```{r drop_levels_naive, message=FALSE, warning=FALSE}
+dds_naive16h$donor_id <- droplevels(dds_naive16h$donor_id)
+dds_naive16h$cytokine_condition <- droplevels(dds_naive16h$cytokine_condition)
+
+dds_naive5d$donor_id <- droplevels(dds_naive5d$donor_id)
+dds_naive5d$cytokine_condition <- droplevels(dds_naive5d$cytokine_condition)
+```
+
+Estimate the gene-wise dispersions.
+```{r fit_model_naive, warning=FALSE}
+dds_naive16h <- DESeq(dds_naive16h)
+dds_naive5d <- DESeq(dds_naive5d)
+```
+
+Performing statistical testing for differential expression. This is done separately for each time point, with an FDR thrshold of 0.05.
+```{r test_DGE_naive, warning=FALSE, message=FALSE}
+results_naive16h <- serialDE(dds=dds_naive16h, ctrl="Th0", fdr=0.05)
+results_naive5d <- serialDE(dds=dds_naive5d, ctrl="Th0", fdr=0.05)
+```
+
+We also compare the iTreg and Th17 stimulations (known to be closely related).
+```{r itreg vs th17 naive, message=FALSE, warning=FALSE}
+results_naive5d_iTregVSth17 <- results(dds_naive5d,
+                                       contrast=c("cytokine_condition","iTreg","Th17"),
+                                       alpha=0.05,
+                                       independentFiltering = TRUE)
+```
+
+Create a list that contains the results from each statistical test, labelled by condition.
+```{r create_DE_gene_list_naive, message=FALSE, warning=FALSE}
+DEgenes_naive16h <- list(resting = results_naive16h[[3]],
+                    Th1 = results_naive16h[[4]],
+                    Th17 = results_naive16h[[5]],
+                    Th2 = results_naive16h[[6]],
+                    iTreg = results_naive16h[[2]],
+                    IFNb = results_naive16h[[1]])
+
+DEgenes_naive5d <- list(resting = results_naive5d[[3]],
+                     Th1 = results_naive5d[[4]],
+                     Th17 = results_naive5d[[5]],
+                     Th2 = results_naive5d[[6]],
+                     iTreg = results_naive5d[[2]],
+                     IFNb = results_naive5d[[1]],
+                     iTreg_vs_Th17 = results_naive5d_iTregVSth17)
+```
+
+Keeping only genes with P-adjusted < 0.05 and LFC > 0.5, ordered by decreasing LFC and with the corresponding gene information (name and biotype)
+```{r filter_DE_genes, message=FALSE, warning=FALSE}
+DEgenes_naive16h <- lapply(X=DEgenes_naive16h, FUN=function(res){
+  R <- subset(res, padj < 0.05 & abs(log2FoldChange) > 0.5)
+  R <- cbind(R, rowData(dds_naive16h)[rowData(dds_naive16h)$Gene_id %in% rownames(R),c("Gene_symbol","Biotype")])
+  R <- R[order(-R$log2FoldChange),]
+  return(R)
+  })
+
+DEgenes_naive5d <- lapply(X=DEgenes_naive5d, FUN=function(res){
+  R <- subset(res, padj < 0.05 & abs(log2FoldChange) > 0.5)
+  R <- cbind(R, rowData(dds_naive5d)[rowData(dds_naive5d)$Gene_id %in% rownames(R),c("Gene_symbol","Biotype")])
+  R <- R[order(-R$log2FoldChange),]
+  return(R)
+  })
+```
+
+Saving results as CSV files.
+```{r save_results_naive, message=FALSE, warning=FALSE}
+write.csv(DEgenes_naive16h$resting, "differentiallyExpressedGenes_naive_16h_resting_vs_Th0.csv")
+write.csv(DEgenes_naive16h$Th1, "differentiallyExpressedGenes_naive_16h_Th1_vs_Th0.csv")
+write.csv(DEgenes_naive16h$Th2, "differentiallyExpressedGenes_naive_16h_Th2_vs_Th0.csv")
+write.csv(DEgenes_naive16h$Th17, "differentiallyExpressedGenes_naive_16h_Th17_vs_Th0.csv")
+write.csv(DEgenes_naive16h$iTreg, "differentiallyExpressedGenes_naive_16h_iTreg_vs_Th0.csv")
+write.csv(DEgenes_naive16h$IFNb, "differentiallyExpressedGenes_naive_16h_IFNB_vs_Th0.csv")
+
+write.csv(DEgenes_naive5d$resting, "differentiallyExpressedGenes_naive_5d_resting_vs_Th0.csv")
+write.csv(DEgenes_naive5d$Th1, "differentiallyExpressedGenes_naive_5d_Th1_vs_Th0.csv")
+write.csv(DEgenes_naive5d$Th2, "differentiallyExpressedGenes_naive_5d_Th2_vs_Th0.csv")
+write.csv(DEgenes_naive5d$Th17, "differentiallyExpressedGenes_naive_5d_Th17_vs_Th0.csv")
+write.csv(DEgenes_naive5d$iTreg, "differentiallyExpressedGenes_naive_5d_iTreg_vs_Th0.csv")
+write.csv(DEgenes_naive5d$IFNb, "differentiallyExpressedGenes_naive_5d_IFNB_vs_Th0.csv")
+write.csv(DEgenes_naive5d$iTreg_vs_Th17, "differentiallyExpressedGenes_naive_5d_iTreg_vs_Th17.csv")
+```
+
+### Memory CD4+ T cells
+
+Partitioning the memory T cell data set by stimulation time point.
+```{r partition_memory_by_time_point, message=FALSE, warning=FALSE}
+dds_memory16h <- dds.memory[,dds.memory$stimulation_time=="16h"]
+dds_memory5d <- dds.memory[,dds.memory$stimulation_time=="5d"]
+```
+
+Transforming donor IDs to factors.
+```{r transform_donor_to_factor, message=FALSe, warning=FALSE}
+dds_memory16h$donor_id <- factor(dds_memory16h$donor_id)
+dds_memory5d$donor_id <- factor(dds_memory5d$donor_id)
+```
+
+Setting the design equations. The design equation accounts for two sources of variability: 
+
+1) Inter-individual variability (donor_id)
+2) Variability due to cytokine sitmulations (cytokine_condition)
+
+The equation is defined as follows:
+~ Donor + Stimulus
+
+```{r set_design_memory, message=FALSE, warning=FALSE}
+design(dds_memory16h) <- ~ donor_id + cytokine_condition
+design(dds_memory5d) <- ~ donor_id + cytokine_condition
+```
+
+Removing factor levels that are no longer present in the data set.
+```{r drop_levels_memory, message=FALSE, warning=FALSE}
+dds_memory16h$donor_id <- droplevels(dds_memory16h$donor_id)
+dds_memory16h$cytokine_condition <- droplevels(dds_memory16h$cytokine_condition)
+
+dds_memory5d$donor_id <- droplevels(dds_memory5d$donor_id)
+dds_memory5d$cytokine_condition <- droplevels(dds_memory5d$cytokine_condition)
+```
+
+Estimate the gene-wise dispersions.
+```{r fit_model_memory, warning=FALSE}
+dds_memory16h <- DESeq(dds_memory16h)
+dds_memory5d <- DESeq(dds_memory5d)
+```
+
+Performing statistical testing for differential expression. This is done separately for each time point, with an FDR thrshold of 0.05.
+```{r test_DGE_memory, warning=FALSE, message=FALSE}
+results_memory16h <- serialDE(dds=dds_memory16h, ctrl="Th0", fdr=0.05)
+results_memory5d <- serialDE(dds=dds_memory5d, ctrl="Th0", fdr=0.05)
+```
+
+We also compare the iTreg and Th17 stimulations (known to be closely related).
+```{r itreg vs th17 memory, message=FALSE, warning=FALSE}
+results_memory5d_iTregVSth17 <- results(dds_memory5d,
+                                       contrast=c("cytokine_condition","iTreg","Th17"),
+                                       alpha=0.05,
+                                       independentFiltering = TRUE)
+```
+
+Create a list that contains the results from each statistical test, labelled by condition.
+```{r create_DE_gene_list_memory, message=FALSE, warning=FALSE}
+DEgenes_memory16h <- list(resting = results_memory16h[[3]],
+                    Th1 = results_memory16h[[4]],
+                    Th17 = results_memory16h[[5]],
+                    Th2 = results_memory16h[[6]],
+                    iTreg = results_memory16h[[2]],
+                    IFNb = results_memory16h[[1]])
+
+DEgenes_memory5d <- list(resting = results_memory5d[[3]],
+                     Th1 = results_memory5d[[4]],
+                     Th17 = results_memory5d[[5]],
+                     Th2 = results_memory5d[[6]],
+                     iTreg = results_memory5d[[2]],
+                     IFNb = results_memory5d[[1]],
+                     iTreg_vs_Th17 = results_memory5d_iTregVSth17)
+```
+
+Keeping only genes with P-adjusted < 0.05 and LFC > 0.5, ordered by decreasing LFC and with the corresponding gene information (name and biotype)
+```{r filter_DE_genes, message=FALSE, warning=FALSE}
+DEgenes_memory16h <- lapply(X=DEgenes_memory16h, FUN=function(res){
+  R <- subset(res, padj < 0.05 & abs(log2FoldChange) > 0.5)
+  R <- cbind(R, rowData(dds_memory16h)[rowData(dds_memory16h)$Gene_id %in% rownames(R),c("Gene_symbol","Biotype")])
+  R <- R[order(-R$log2FoldChange),]
+  return(R)
+  })
+
+DEgenes_memory5d <- lapply(X=DEgenes_memory5d, FUN=function(res){
+  R <- subset(res, padj < 0.05 & abs(log2FoldChange) > 0.5)
+  R <- cbind(R, rowData(dds_memory5d)[rowData(dds_memory5d)$Gene_id %in% rownames(R),c("Gene_symbol","Biotype")])
+  R <- R[order(-R$log2FoldChange),]
+  return(R)
+  })
+```
+
+Saving results as CSV files.
+```{r save_results_memory, message=FALSE, warning=FALSE}
+write.csv(DEgenes_memory16h$resting, "differentiallyExpressedGenes_memory_16h_resting_vs_Th0.csv")
+write.csv(DEgenes_memory16h$Th1, "differentiallyExpressedGenes_memory_16h_Th1_vs_Th0.csv")
+write.csv(DEgenes_memory16h$Th2, "differentiallyExpressedGenes_memory_16h_Th2_vs_Th0.csv")
+write.csv(DEgenes_memory16h$Th17, "differentiallyExpressedGenes_memory_16h_Th17_vs_Th0.csv")
+write.csv(DEgenes_memory16h$iTreg, "differentiallyExpressedGenes_memory_16h_iTreg_vs_Th0.csv")
+write.csv(DEgenes_memory16h$IFNb, "differentiallyExpressedGenes_memory_16h_IFNB_vs_Th0.csv")
+
+write.csv(DEgenes_memory5d$resting, "differentiallyExpressedGenes_memory_5d_resting_vs_Th0.csv")
+write.csv(DEgenes_memory5d$Th1, "differentiallyExpressedGenes_memory_5d_Th1_vs_Th0.csv")
+write.csv(DEgenes_memory5d$Th2, "differentiallyExpressedGenes_memory_5d_Th2_vs_Th0.csv")
+write.csv(DEgenes_memory5d$Th17, "differentiallyExpressedGenes_memory_5d_Th17_vs_Th0.csv")
+write.csv(DEgenes_memory5d$iTreg, "differentiallyExpressedGenes_memory_5d_iTreg_vs_Th0.csv")
+write.csv(DEgenes_memory5d$IFNb, "differentiallyExpressedGenes_memory_5d_IFNB_vs_Th0.csv")
+write.csv(DEgenes_memory5d$iTreg_vs_Th17, "differentiallyExpressedGenes_memory_5d_iTreg_vs_Th17.csv")
+```
