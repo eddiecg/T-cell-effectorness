@@ -5,10 +5,10 @@
 library(DESeq2)
 
 ## LOADING DATA
-### Loading protein abundances
+### Loading protein abundances. Refer to "proteomics_Create_summarized_experiment.R" to see how this object was created.
 proteomics_data <- readRDS("proteinAbundances_summarizedExperiment.rds")
 
-### Loading RNA counts
+### Loading RNA counts. Refer to "RNAseq_exploratory_data_analysis.Rmd" to see how this object was created.
 rna_data <- readRDS("../RNAseq/rawCounts_bulkRNAseq_DESeq2.rds")
 
 ## PRE-PROCESSING DATA
