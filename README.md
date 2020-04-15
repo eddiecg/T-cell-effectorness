@@ -1,8 +1,8 @@
 # T-cell-effectorness
 This repository contains all the codes used for the downstream data analysis steps in the paper "Single-cell transcriptomics identifies an effectorness gradient shaping the response of CD4+ T cells to cytokines"
-For a detailed explanation of the aims and theoretical bases of these codes, please refer to our BioRxiv publication:
+For a detailed explanation of the aims and theoretical bases of these codes, please refer to our study in Nature Communications:
 
-https://www.biorxiv.org/content/10.1101/753731v1
+https://www.nature.com/articles/s41467-020-15543-y
 
 All codes are written in R (either as R files or R markdowns) and have been organised by data type (see below for a detailed description of the data analysis steps contained in each directory).
 For further information about these codes, please either raise an issue or email ecg@sanger.ac.uk
